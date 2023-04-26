@@ -5,7 +5,15 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-
+using Sat.Recruitment.Api.Builders;
+using Sat.Recruitment.Api.Builders.Interfaces;
+using Sat.Recruitment.Api.Controllers;
+using Sat.Recruitment.Api.Repositories;
+using Sat.Recruitment.Api.Repositories.Interfaces;
+using Sat.Recruitment.Api.Services;
+using Sat.Recruitment.Api.Services.Interfaces;
+using Sat.Recruitment.Api.Validators;
+using Sat.Recruitment.Api.Validators.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,6 +33,22 @@ namespace Sat.Recruitment.Api
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
+            services.AddScoped<IUserBuilder, UserBuilder>();
+            services.AddScoped<IRepository, TextFileRepository>();
+
+            services.AddScoped<IEnumerable<IUserValidator>>(
+                s => new List<IUserValidator>()
+                {
+                    new NameValidator(),
+                    new AddressValidator(),
+                    new EmailValidator(),
+                    new PhoneValidator(),
+                });
+
+            services.AddScoped<IUserService, UserService>();
+
+            services.AddScoped<ILogger<UsersController>, Logger<UsersController>>();
+
             services.AddControllers();
             services.AddSwaggerGen();
         }

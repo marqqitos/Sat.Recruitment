@@ -1,6 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-
+using Sat.Recruitment.Api.DTOs;
+using Sat.Recruitment.Api.Exceptions;
+using Sat.Recruitment.Api.Models;
+using Sat.Recruitment.Api.Services.Interfaces;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,195 +11,82 @@ using System.Threading.Tasks;
 
 namespace Sat.Recruitment.Api.Controllers
 {
-    public class Result
-    {
-        public bool IsSuccess { get; set; }
-        public string Errors { get; set; }
-    }
-
     [ApiController]
     [Route("[controller]")]
     public partial class UsersController : ControllerBase
     {
+        private readonly IUserService _userService;
+        private readonly ILogger<UsersController> _logger;
 
-        private readonly List<User> _users = new List<User>();
-        public UsersController()
+        public UsersController(IUserService userService, ILogger<UsersController> logger)
         {
+            _userService = userService;
+            _logger = logger;
         }
 
         [HttpPost]
-        [Route("/create-user")]
-        public async Task<Result> CreateUser(string name, string email, string address, string phone, string userType, string money)
+        public async Task<IActionResult> CreateUser(UserDTO newUserDto)
         {
-            var errors = "";
+            _logger.LogDebug("Validating user - Name: {name}, Email: {email}, Address: {address}, Phone: {phone}", 
+                newUserDto.Name, newUserDto.Email, newUserDto.Address, newUserDto.Phone);
 
-            ValidateErrors(name, email, address, phone, ref errors);
+            var validationResult = _userService.ValidateNewUser(newUserDto);
 
-            if (errors != null && errors != "")
-                return new Result()
+            if (!validationResult.IsValid)
+            {
+                var errorMessages = string.Join(", ", validationResult.ErrorMessages);
+
+                _logger.LogError("CreateUser - Validation Errors: {errorMessages}", errorMessages);
+
+                var result = new Result()
                 {
                     IsSuccess = false,
-                    Errors = errors
+                    Errors = errorMessages
                 };
 
-            var newUser = new User
-            {
-                Name = name,
-                Email = email,
-                Address = address,
-                Phone = phone,
-                UserType = userType,
-                Money = decimal.Parse(money)
-            };
-
-            if (newUser.UserType == "Normal")
-            {
-                if (decimal.Parse(money) > 100)
-                {
-                    var percentage = Convert.ToDecimal(0.12);
-                    //If new user is normal and has more than USD100
-                    var gif = decimal.Parse(money) * percentage;
-                    newUser.Money = newUser.Money + gif;
-                }
-                if (decimal.Parse(money) < 100)
-                {
-                    if (decimal.Parse(money) > 10)
-                    {
-                        var percentage = Convert.ToDecimal(0.8);
-                        var gif = decimal.Parse(money) * percentage;
-                        newUser.Money = newUser.Money + gif;
-                    }
-                }
-            }
-            if (newUser.UserType == "SuperUser")
-            {
-                if (decimal.Parse(money) > 100)
-                {
-                    var percentage = Convert.ToDecimal(0.20);
-                    var gif = decimal.Parse(money) * percentage;
-                    newUser.Money = newUser.Money + gif;
-                }
-            }
-            if (newUser.UserType == "Premium")
-            {
-                if (decimal.Parse(money) > 100)
-                {
-                    var gif = decimal.Parse(money) * 2;
-                    newUser.Money = newUser.Money + gif;
-                }
+                return BadRequest(result);
             }
 
-
-            var reader = ReadUsersFromFile();
-
-            //Normalize email
-            var aux = newUser.Email.Split(new char[] { '@' }, StringSplitOptions.RemoveEmptyEntries);
-
-            var atIndex = aux[0].IndexOf("+", StringComparison.Ordinal);
-
-            aux[0] = atIndex < 0 ? aux[0].Replace(".", "") : aux[0].Replace(".", "").Remove(atIndex);
-
-            newUser.Email = string.Join("@", new string[] { aux[0], aux[1] });
-
-            while (reader.Peek() >= 0)
-            {
-                var line = reader.ReadLineAsync().Result;
-                var user = new User
-                {
-                    Name = line.Split(',')[0].ToString(),
-                    Email = line.Split(',')[1].ToString(),
-                    Phone = line.Split(',')[2].ToString(),
-                    Address = line.Split(',')[3].ToString(),
-                    UserType = line.Split(',')[4].ToString(),
-                    Money = decimal.Parse(line.Split(',')[5].ToString()),
-                };
-                _users.Add(user);
-            }
-            reader.Close();
             try
             {
-                var isDuplicated = false;
-                foreach (var user in _users)
+                _logger.LogDebug("User passes initial validation, " +
+                    "creating user -> Name: {Name}, Email: {email}, Address: {address}, Phone: {phone}, UserType: {type}, Money: {money}",
+                    newUserDto.Name, newUserDto.Email, newUserDto.Address, newUserDto.Phone, newUserDto.UserType, newUserDto.Money);
+
+                var user = await _userService.CreateUser(newUserDto);
+
+                var result = new Result()
                 {
-                    if (user.Email == newUser.Email
-                        ||
-                        user.Phone == newUser.Phone)
-                    {
-                        isDuplicated = true;
-                    }
-                    else if (user.Name == newUser.Name)
-                    {
-                        if (user.Address == newUser.Address)
-                        {
-                            isDuplicated = true;
-                            throw new Exception("User is duplicated");
-                        }
+                    IsSuccess = true,
+                    Data = user
+                };
 
-                    }
-                }
+                _logger.LogDebug("User {email} created succesfully", user.Email);
 
-                if (!isDuplicated)
-                {
-                    Debug.WriteLine("User Created");
-
-                    return new Result()
-                    {
-                        IsSuccess = true,
-                        Errors = "User Created"
-                    };
-                }
-                else
-                {
-                    Debug.WriteLine("The user is duplicated");
-
-                    return new Result()
-                    {
-                        IsSuccess = false,
-                        Errors = "The user is duplicated"
-                    };
-                }
+                return Ok(result);
             }
-            catch
+            catch (Exception ex) when 
+            (
+                ex is ArgumentException ||
+                ex is EntityExistsException
+            )
             {
-                Debug.WriteLine("The user is duplicated");
-                return new Result()
+                _logger.LogError("CreateUser - There was an error when trying to create the user. " +
+                    "Exception type: {exType} - Exception Message: {exMessage} - Stacktrace: {exStackTrace}", 
+                    ex.GetType(), 
+                    ex.Message, 
+                    ex.StackTrace
+                );
+
+                var result = new Result()
                 {
                     IsSuccess = false,
-                    Errors = "The user is duplicated"
+                    Errors = ex.Message
                 };
+
+                return BadRequest(result);
             }
-
-            return new Result()
-            {
-                IsSuccess = true,
-                Errors = "User Created"
-            };
         }
 
-        //Validate errors
-        private void ValidateErrors(string name, string email, string address, string phone, ref string errors)
-        {
-            if (name == null)
-                //Validate if Name is null
-                errors = "The name is required";
-            if (email == null)
-                //Validate if Email is null
-                errors = errors + " The email is required";
-            if (address == null)
-                //Validate if Address is null
-                errors = errors + " The address is required";
-            if (phone == null)
-                //Validate if Phone is null
-                errors = errors + " The phone is required";
-        }
-    }
-    public class User
-    {
-        public string Name { get; set; }
-        public string Email { get; set; }
-        public string Address { get; set; }
-        public string Phone { get; set; }
-        public string UserType { get; set; }
-        public decimal Money { get; set; }
     }
 }
